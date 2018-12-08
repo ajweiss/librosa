@@ -15,6 +15,7 @@ Audio processing
     get_duration
     autocorrelate
     lpc
+    stlpc
     zero_crossings
     clicks
     tone
@@ -33,6 +34,7 @@ Spectral representations
     hybrid_cqt
     pseudo_cqt
     iirt
+    lpcspec
     fmt
 
     interp_harmonics

@@ -16,9 +16,10 @@ from .time_frequency import frames_to_samples, time_to_samples
 from .. import cache
 from .. import util
 from ..util.exceptions import ParameterError
+from ..filters import get_window
 
 __all__ = ['load', 'to_mono', 'resample', 'get_duration', 'autocorrelate',
-           'lpc', 'zero_crossings', 'clicks', 'tone', 'chirp']
+           'lpc', 'stlpc', 'zero_crossings', 'clicks', 'tone', 'chirp']
 
 # Resampling bandwidths as percentage of Nyquist
 BW_BEST = resampy.filters.get_filter('kaiser_best')[2]
@@ -588,6 +589,109 @@ def __lpc(y, N):
 
     return a[cur, :]
 
+
+def stlpc(y=None, frame_length=2048, hop_length=512, window='hann', mean_center=True, N=16):
+    """Short time Linear Prediction Coefficients
+
+    This function frames the input data in accordance with `frame_length` and
+    `hop_length` and then computes LP coefficients via Burg's method with
+    librosa.core.lpc.
+
+    Parameters
+    ----------
+    y : np.ndarray
+        Time series to frame and fit
+
+    frame_length : int > 0 [scalar]
+        Length of analysis frame (in samples) for LPC calculation
+
+    hop_length : int > 0 [scalar]
+        Hop length for advancing the analysis frame (in samples)
+
+    window : string, tuple, number, function, or np.ndarray [shape=(n_fft,)]
+        - a window specification (string, tuple, or number);
+          see `scipy.signal.get_window`
+        - a window function, such as `scipy.signal.hanning`
+        - a vector or array of length `frame_length`
+
+        .. see also:: `filters.get_window`
+
+    mean_center: bool
+        Subtract mean from short time signal before applying window function
+        By default, the mean will be subtracted.
+
+    N : int > 0
+        Order of the linear filters
+
+    Returns
+    -------
+    a : np.ndarray of length N + 1
+        LP filter coefficients, i.e. denominator polynomial of the filter
+    A : np.ndarray [shape=(N + 1, t), dtype=dtype]
+        LP coefficient by time matrix with coefficients in increasing order
+
+    Raises
+    ------
+    ParameterError
+        - If y is not real-valued
+        - If N < 1 or not integer
+    FloatingPointError
+        - If y is ill-conditioned
+
+    See also
+    --------
+    librosa.core.lpc
+    librosa.spectrum.lpcspec
+    scipy.signal.lfilter
+
+    Examples
+    --------
+
+    Compute windowed LP coefficients of an audio signal at order 16 on a
+    22050 Hz input with 20ms analysis windows and 5ms hops.
+
+    >>> from librosa import time_to_samples
+    >>> y, sr = librosa.load(librosa.util.example_audio_file(), offset=20,
+    ...                      duration=1)
+    >>> z = librosa.stlpc(y, frame_length=time_to_samples(0.020),
+    ...                   hop_length=time_to_samples(0.005),
+    ...                   N=16, window='boxcar')
+
+    Visualize the resulting coefficient matrix.  N.B. This visualization does
+    not make much intuitive sense, see `librosa.spectrum.lpcspec` for the spectrum.
+
+    >>> from librosa import time_to_samples
+    >>> import matplotlib.pyplot as plt
+    >>> librosa.display.specshow(z, sr=sr,
+    ...                          hop_length=time_to_samples(0.005),
+    ...                          x_axis='time', y_axis=None)
+    >>> plt.ylabel('Coefficient')
+    >>> plt.title('Windowed LP Coefficients')
+    >>> plt.colorbar()
+    >>> plt.tight_layout()
+    """
+    if y is None:
+        raise ParameterError('Must supply `y`')
+
+    if not isinstance(N, int) or N < 1:
+        raise ParameterError("N must be an integer > 0")
+
+    y = to_mono(y)
+
+    if mean_center:
+        y = y - np.mean(y)
+
+    x = util.frame(y,
+                   frame_length=frame_length,
+                   hop_length=hop_length)
+
+    window_vector = get_window(window, frame_length, fftbins=True)
+
+    A = np.zeros((N + 1, np.size(x,1)))
+    for i in range(np.size(x,1)):
+        A[:,i] = lpc(y=x[:,i]*window_vector, N=N)
+
+    return A
 
 @cache(level=20)
 def zero_crossings(y, threshold=1e-10, ref_magnitude=None, pad=True,

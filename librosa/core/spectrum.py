@@ -13,6 +13,7 @@ import six
 
 from . import time_frequency
 from .audio import resample
+from .audio import stlpc
 from .. import cache
 from .. import util
 from ..util.exceptions import ParameterError
@@ -20,7 +21,7 @@ from ..filters import get_window, semitone_filterbank
 from ..filters import window_sumsquare
 
 __all__ = ['stft', 'istft', 'magphase', 'iirt',
-           'ifgram', 'phase_vocoder',
+           'lpcspec', 'ifgram', 'phase_vocoder',
            'perceptual_weighting',
            'power_to_db', 'db_to_power',
            'amplitude_to_db', 'db_to_amplitude',
@@ -760,6 +761,143 @@ def iirt(y, sr=22050, win_length=2048, hop_length=None, center=True,
         bands_power.append(factor * np.sum(cur_frames**2, axis=0)[:n_frames])
 
     return np.asarray(bands_power)
+
+
+@cache(level=20)
+def lpcspec(y, N=16, nfreq=512, hop_length=None, win_length=None, window='hann',
+          dtype=np.complex64):
+    """Linear Prediction Coefficient Spectrum
+
+    Computes the spectrum of windowed LPC coefficients using `librosa.stlpc`
+    for a time series `y`.
+
+    Returns a complex-valued matrix D such that
+        `np.abs(D[f, t])` is the magnitude of frequency bin `f`
+        at frame `t`
+
+        `np.angle(D[f, t])` is the phase of frequency bin `f`
+        at frame `t`
+
+    Parameters
+    ----------
+    y : np.ndarray [shape=(n,)], real-valued
+        The input signal (audio time series)
+
+    N : int > 0
+        Order of the linear filters
+
+    nfreq : int > 0 [scalar]
+        Number of frequency bins to compute that will be equally scaled
+        from 0 to the 1/2 of the sampling rate of the input data
+
+    hop_length : int > 0 [scalar]
+        Hop length for advancing the LPC analysis frame (in samples)
+        If unspecified, defaults `win_length / 4`.
+
+    win_length  : int > 0 [scalar]
+        Length of analysis frame (in samples) for LPC calculation
+
+    window : string, tuple, number, function, or np.ndarray [shape=(win_length,)]
+        - a window specification (string, tuple, or number);
+          see `scipy.signal.get_window`
+        - a window function, such as `scipy.signal.hanning`
+        - a vector or array of length `win_length`
+
+        .. see also:: `filters.get_window`
+
+    dtype       : numeric type
+        Complex numeric type for `D`.  Default is 64-bit complex.
+
+    Raises
+    ------
+    ParameterError
+        - If N < 1
+    FloatingPointError
+        - If y is ill-conditioned
+
+    Returns
+    -------
+    D : np.ndarray [shape=(nfreq, t), dtype=dtype]
+
+    See Also
+    --------
+    librosa.lpc : Linear Prediction Coefficients via Burg's method
+    librosa.stlpc : Short time Linear Prediction Coefficients
+    librosa.feature.spectral : Various additional transforms for spectral data
+    librosa.filters.get_window : Windows for short-time analysis
+    scipy.signal.freqz : Frequency response for digital filters
+    scipy.signal.lfilter : Convolution of digital filters with time-series data
+
+    Notes
+    -----
+    This function caches at level 20.
+
+    Examples
+    --------
+
+    >>> y, sr = librosa.load(librosa.util.example_audio_file(),
+    ...                      offset=11, duration=0.5)
+    >>> D = np.abs(librosa.lpcspec(y, 16))
+    >>> D
+    array([[1.85616736e+03, 3.20034302e+02, 1.99045380e+02, ...,
+            2.11319641e+02, 2.44517944e+02, 1.91430008e+02],
+           [1.55758057e+03, 3.81899780e+02, 2.18765015e+02, ...,
+            2.19272156e+02, 2.56687958e+02, 1.92617813e+02],
+           [1.11316748e+03, 6.80449036e+02, 2.63121155e+02, ...,
+            2.36769775e+02, 2.85144470e+02, 1.92027573e+02],
+           ...,
+           [3.96374986e-02, 1.10265814e-01, 1.06190577e-01, ...,
+            5.68717681e-02, 5.79950660e-02, 6.66411966e-02],
+           [3.95866148e-02, 1.10087715e-01, 1.06039584e-01, ...,
+            5.67916073e-02, 5.79043403e-02, 6.65340275e-02],
+           [3.95561233e-02, 1.09981023e-01, 1.05949096e-01, ...,
+            5.67435771e-02, 5.78499958e-02, 6.64698258e-02]], dtype=float32)
+
+    Display a spectrogram (applying a small pre-emphasis filter first)
+
+    >>> import matplotlib.pyplot as plt
+    >>> from librosa import time_to_samples, time_to_frames
+    >>> import scipy
+    >>> win_samples = time_to_samples(0.025)
+    >>> hop_samples = time_to_samples(0.005)
+    >>> y_hpf = scipy.signal.lfilter([1, -0.97], [1], y)
+    >>> D = np.abs(librosa.lpcspec(y_hpf, N=24, win_length=win_samples, hop_length=hop_samples))
+    >>> librosa.display.specshow(librosa.amplitude_to_db(D, ref=np.max),
+    ...                          y_axis='linear', x_axis='time',
+    ...                          hop_length=hop_samples)
+    >>> plt.title('LPC spectrogram')
+    >>> plt.colorbar(format='%+2.0f dB')
+    >>> plt.tight_layout()
+
+    """
+    if win_length is None:
+        win_length = nfreq
+
+    # Set the default hop, if it's not already specified
+    if hop_length is None:
+        hop_length = int(win_length // 4)
+
+    if N <= 0:
+        raise ParameterError('Must supply N, positive and > 0')
+
+    # Check audio is valid and convert it to mono if neccesary
+    util.valid_audio(y)
+
+    # Window the time series and compute LPCs.
+    y_windowed_lpcs = stlpc(y, frame_length=win_length,
+                            hop_length=hop_length, window=window, N=N)
+
+    # Pre-allocate the spectrum matrix
+    lpcspec_matrix = np.empty((nfreq, y_windowed_lpcs.shape[1]),
+                              dtype=dtype,
+                              order='F')
+
+    # Evaluate the responses for each filter and stack them column-wise
+    for i in range(y_windowed_lpcs.shape[1]):
+        _, lpcspec_matrix[:, i] = \
+            scipy.signal.freqz([1], y_windowed_lpcs[:, i], nfreq)
+
+    return lpcspec_matrix
 
 
 @cache(level=30)
